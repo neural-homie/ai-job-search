@@ -1,0 +1,119 @@
+# Nightly job-application pipeline: every setting lives here.
+#
+# This is the example. The real file is pipeline/config.yaml in your Google Drive data
+# folder: it holds your Drive ids, task ids and Chrome device id, so it never goes on the
+# branch. Every session pulls it from Drive. To change a setting, see "Changing settings
+# or your profile" in pipeline/README.md.
+#
+# The times of day are the one thing that isn't here: they belong to the "Nightly job
+# applications" scheduled task (currently 12:00am Pacific) and the "Morning application
+# filling" task (about 7:30am Pacific). Change them there, or ask Claude to move them.
+#
+# After editing, check the file:  python3 pipeline/pipeline_state.py check
+# See pipeline/README.md for how the pieces fit together.
+
+version: 1
+timezone: America/Los_Angeles
+
+# --- Where your personal files and data live --------------------------------
+drive:
+  root_id: "DRIVE_FOLDER_ID"         # the data root folder in Google Drive
+  sheet_id: "SPREADSHEET_ID"         # job_search_data
+  folders: {}                         # optional: repo-relative folder -> Drive folder id
+  overlay:                            # personal files copied over the clone by every session
+    - CLAUDE.md
+    - cv/main_example.tex
+    - .claude/skills/job-scraper/search-queries.md
+    - .claude/skills/job-application-assistant/01-candidate-profile.md
+    - .claude/skills/job-application-assistant/02-behavioral-profile.md
+    - .claude/skills/job-application-assistant/04-job-evaluation.md
+    - .claude/skills/job-application-assistant/05-cv-templates.md
+    - .claude/skills/job-application-assistant/06-cover-letter-templates.md
+    - .claude/skills/job-application-assistant/07-interview-prep.md
+  replaceable:                        # the only Drive files sessions replace (new copy, then trash the old)
+    - job_scraper/notion_sync.json
+    - company_research/*.json
+
+# --- Which ranked jobs get applied to each night ---------------------------
+selection:
+  max_applications: 3          # jobs to apply to per night
+  min_rank_score: 60           # /rank overall score floor (60 = Good Fit and above)
+  verdicts: []                 # e.g. [Strong Fit, Good Fit]; empty = any verdict that clears the floor
+  max_per_company: 1           # per night; also keeps two lanes from researching one company at once
+  skip_location_flag: true     # /rank location FLAG (travel, unclear site) waits for your judgment
+  skip_language_flag: true     # /rank language FLAG waits for your judgment
+  skip_guard_flagged: true     # a posting integrity flag, or no integrity check on record, waits for you
+  max_rank_age_days: 21        # ignore rankings older than this
+  max_posting_age_days: 45     # ignore postings older than this (only when the posting date is known)
+  exclude_companies: []        # e.g. [Example Corp]; also matches as a whole word ("Example Corp Services, Inc.")
+  include_title_keywords: []   # if set, the title must contain one of these
+  exclude_title_keywords: []   # e.g. [intern, principal, director]
+  retry_errored_lanes: true    # retry a job whose lane errored or never finished on an earlier night...
+  max_lane_attempts: 2         # ...up to this many attempts in total
+
+# --- Stage order ------------------------------------------------------------
+# before_lanes run once, in order. lane runs per selected job in stand-alone
+# sessions: first its documents stages, during the night, then, in a separate
+# session the morning filling task starts, its browser stages (phase: browser).
+# after_lanes run once when every documents lane has finished.
+# To add a step: define it under stage_defs, then put its name in a list.
+stages:
+  before_lanes: [scrape, rank]
+  lane: [apply, form-answers, autofill]
+  after_lanes: [record, notion-sync, report]
+
+stage_defs:
+  scrape:
+    run: .claude/skills/job-scraper/SKILL.md
+    args: ""                   # "broad" for every query category, or a focus such as "llm evaluation"
+  rank:
+    run: .claude/commands/rank.md
+    args: "--limit 20 --top 10"
+  apply:
+    run: .claude/commands/apply.md
+    min_score_to_draft: 60     # /apply's own Step 1 score (with company research) must clear this
+  form-answers:
+    run: pipeline/skills/form-answers/SKILL.md
+  autofill:
+    run: anthropic-skills:job-application-autofill
+    phase: browser             # runs in its own session, started by the morning filling task
+    browser: chrome            # chrome can upload the CV and cover letter; the built-in browser can't
+    chrome_device_id: "CHROME_DEVICE_ID"  # the Chrome the browser lanes fill forms in.
+                               # Each session calls select_browser with this id. If the extension is reinstalled
+                               # the id changes: get the new one from list_connected_browsers in a live session.
+    enabled: true              # false = stop each job after the answers file
+  record:
+    run: builtin               # pipeline_state.py record: adds the "drafted" rows to the Sheet's tracker tab
+  notion-sync:
+    run: .claude/commands/notion-sync.md
+    args: ""
+  report:
+    run: builtin               # pipeline/runs/<run>/report.md plus the morning summary
+
+# --- Lane sessions ------------------------------------------------------------
+lanes:
+  documents_task_id: "TASK_ID" # the "Job documents lane" scheduled task (the old name, task_id, still works)
+  browser_task_id: "TASK_ID"   # the "Job browser lane" scheduled task
+  max_parallel: 3              # documents lanes (/apply, answer key) running at once
+  max_parallel_browser: 1      # browser lanes at once. Every session shares Chrome's tab group,
+                               # so 1 is the safe default; raise it only after watching a few runs
+  first_check_minutes: 60      # when the orchestrator first checks on the lanes
+  check_every_minutes: 20      # how often after that
+  browser_check_minutes: 10    # how often the morning filler checks on its browser lane
+  max_wait_minutes: 360        # stop waiting and report after this long
+  max_fill_age_days: 7         # the morning filler leaves drafts older than this unfilled
+  browser_max_minutes: 45      # a browser lane not finished after this long counts as dead: the queue
+                               # moves on, and its job is held for you (it may have a half-filled tab)
+
+# --- Upload file names --------------------------------------------------------
+# The browser lane uploads renamed copies so recruiters see the applicant's name, not
+# main_company_role.pdf. {first} and {last} come from the profile's form-name line.
+uploads:
+  cv_name: "{first} {last} CV.pdf"
+  cover_letter_name: "{first} {last} CL.pdf"
+
+# --- Submission ---------------------------------------------------------------
+# There is no submit stage. Every application stops before Submit for your review.
+# Adding one later is a deliberate change (a new browser stage plus a change to the
+# autofill skill), made once `python3 pipeline/pipeline_state.py stats` shows the
+# picks and drafts hold up. See "Before going hands-off" in pipeline/README.md.

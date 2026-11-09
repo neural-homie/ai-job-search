@@ -121,3 +121,11 @@ company_research/*.json
 
 # Brainstorm mockups (superpowers visual companion) - never ship
 .superpowers/
+
+# Nightly pipeline (pipeline/): personal state never goes to git.
+# The real settings live in the applicant's Google Drive; config.example.yaml is the template.
+pipeline/config.yaml
+pipeline/runs/
+pipeline/fills/
+pipeline/ledger.json
+.drive_sync/
